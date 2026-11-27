@@ -7,6 +7,7 @@ import { TelemetryGrid } from './components/TelemetryGrid';
 import { useCompassSensor } from './hooks/useCompassSensor';
 import { useGeolocationTelemetry } from './hooks/useGeolocationTelemetry';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
+import { computeMagneticDeclination } from './utils/magneticDeclination';
 import {
   type CoordFormat,
   type ElevationUnit,
@@ -24,6 +25,7 @@ interface StoredPrefs {
   speedUnit: SpeedUnit;
   northMode: 'true' | 'magnetic';
   declinationDeg: number;
+  autoDeclinationEnabled: boolean;
 }
 
 const DEFAULT_PREFS: StoredPrefs = {
@@ -33,6 +35,7 @@ const DEFAULT_PREFS: StoredPrefs = {
   speedUnit: 'km/h',
   northMode: 'true',
   declinationDeg: 0,
+  autoDeclinationEnabled: true,
 };
 
 function loadPrefs(): StoredPrefs {
@@ -77,20 +80,51 @@ export default function App() {
     }
   }, [prefs]);
 
-  const declinationOffset = prefs.northMode === 'true' ? prefs.declinationDeg : 0;
+  // Compute local magnetic declination automatically from GPS lat & lon offline
+  const autoDeclination = useMemo(
+    () =>
+      computeMagneticDeclination(
+        gps.telemetry.latitude,
+        gps.telemetry.longitude,
+        gps.telemetry.altitude
+      ),
+    [gps.telemetry.latitude, gps.telemetry.longitude, gps.telemetry.altitude]
+  );
+
+  const effectiveDeclination =
+    prefs.autoDeclinationEnabled && autoDeclination !== null
+      ? autoDeclination
+      : prefs.declinationDeg;
+
+  // Apply declination correction according to sensor reference and selected north mode:
+  // - Android magnetometer (`magnetometer-absolute` / `orientation-relative`) is raw Magnetic North:
+  //   Magnetic = +0°, True = +declination.
+  // - iOS `webkit-compass` / GPS course / manual dial are referenced to True North:
+  //   True = +0°, Magnetic = -declination (auto-applied from lat/lon).
+  const isRawMagneticSensor =
+    compass.hasLiveSignal &&
+    (compass.sensorSource === 'magnetometer-absolute' ||
+      compass.sensorSource === 'orientation-relative');
+
+  const headingOffset = useMemo(() => {
+    if (isRawMagneticSensor) {
+      return prefs.northMode === 'true' ? effectiveDeclination : 0;
+    }
+    return prefs.northMode === 'magnetic' ? -effectiveDeclination : 0;
+  }, [isRawMagneticSensor, prefs.northMode, effectiveDeclination]);
 
   const displayHeading = useMemo(() => {
     if (compass.hasLiveSignal && compass.magneticHeading !== null) {
-      return normalizeAngle(compass.magneticHeading + declinationOffset);
+      return normalizeAngle(compass.magneticHeading + headingOffset);
     }
     if (gps.telemetry.gpsHeading !== null && (gps.telemetry.speedMs ?? 0) > 0.8) {
-      return normalizeAngle(gps.telemetry.gpsHeading);
+      return normalizeAngle(gps.telemetry.gpsHeading + headingOffset);
     }
-    return normalizeAngle(manualHeading);
+    return normalizeAngle(manualHeading + headingOffset);
   }, [
     compass.hasLiveSignal,
     compass.magneticHeading,
-    declinationOffset,
+    headingOffset,
     gps.telemetry.gpsHeading,
     gps.telemetry.speedMs,
     manualHeading,
@@ -98,15 +132,40 @@ export default function App() {
 
   const smoothDisplayHeading = useMemo(() => {
     if (compass.hasLiveSignal) {
-      return compass.smoothHeading + declinationOffset;
+      return compass.smoothHeading + headingOffset;
     }
-    return manualSmoothHeading;
-  }, [compass.hasLiveSignal, compass.smoothHeading, declinationOffset, manualSmoothHeading]);
+    return manualSmoothHeading + headingOffset;
+  }, [compass.hasLiveSignal, compass.smoothHeading, headingOffset, manualSmoothHeading]);
 
   const handleManualHeadingChange = (deg: number) => {
     const next = normalizeAngle(deg);
     setManualHeading(next);
     setManualSmoothHeading((prev) => unwrapCompassAngle(prev, next));
+  };
+
+  const handleNorthModeChange = (mode: 'true' | 'magnetic') => {
+    setPrefs((p) => ({
+      ...p,
+      northMode: mode,
+      // Selecting Magnetic North automatically enables lat/lon WMM declination correction
+      autoDeclinationEnabled: mode === 'magnetic' ? true : p.autoDeclinationEnabled,
+    }));
+  };
+
+  const handleDeclinationChange = (deg: number) => {
+    setPrefs((p) => ({
+      ...p,
+      declinationDeg: deg,
+      autoDeclinationEnabled: false,
+    }));
+  };
+
+  const handleUseAutoDeclination = () => {
+    setPrefs((p) => ({
+      ...p,
+      autoDeclinationEnabled: true,
+      declinationDeg: autoDeclination ?? 0,
+    }));
   };
 
   const handleToggleBearingLock = () => {
@@ -241,13 +300,13 @@ export default function App() {
               setPrefs((p) => ({ ...p, speedUnit }))
             }
             northMode={prefs.northMode}
-            onNorthModeChange={(northMode) =>
-              setPrefs((p) => ({ ...p, northMode }))
-            }
-            declinationDeg={prefs.declinationDeg}
-            onDeclinationChange={(declinationDeg) =>
-              setPrefs((p) => ({ ...p, declinationDeg }))
-            }
+            onNorthModeChange={handleNorthModeChange}
+            declinationDeg={effectiveDeclination}
+            autoDeclination={autoDeclination}
+            autoDeclinationEnabled={prefs.autoDeclinationEnabled}
+            headingOffset={headingOffset}
+            onDeclinationChange={handleDeclinationChange}
+            onUseAutoDeclination={handleUseAutoDeclination}
             theme={prefs.theme}
             onThemeChange={(theme) => setPrefs((p) => ({ ...p, theme }))}
             offlineReady={offlineReady}

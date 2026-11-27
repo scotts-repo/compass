@@ -5,6 +5,7 @@ import type {
   ElevationUnit,
   SpeedUnit,
 } from '../utils/navigationMath';
+import { formatDeclination } from '../utils/magneticDeclination';
 import type { GeolocationStatus } from '../hooks/useGeolocationTelemetry';
 import { PWAInstallButton } from './PWAInstallButton';
 
@@ -18,7 +19,11 @@ interface SettingsPageProps {
   northMode: 'true' | 'magnetic';
   onNorthModeChange: (mode: 'true' | 'magnetic') => void;
   declinationDeg: number;
+  autoDeclination: number | null;
+  autoDeclinationEnabled: boolean;
+  headingOffset: number;
   onDeclinationChange: (deg: number) => void;
+  onUseAutoDeclination: () => void;
   theme: 'dark' | 'light';
   onThemeChange: (theme: 'dark' | 'light') => void;
   offlineReady: boolean;
@@ -43,7 +48,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   northMode,
   onNorthModeChange,
   declinationDeg,
+  autoDeclination,
+  autoDeclinationEnabled,
+  headingOffset,
   onDeclinationChange,
+  onUseAutoDeclination,
   theme,
   onThemeChange,
   offlineReady,
@@ -184,7 +193,11 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               North Reference
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              Apply magnetic declination for True North
+              {northMode === 'magnetic'
+                ? autoDeclination !== null
+                  ? `Auto-corrected from GPS (${formatDeclination(declinationDeg)} · applied ${headingOffset > 0 ? '+' : ''}${headingOffset.toFixed(1)}°)`
+                  : 'Waiting for GPS lat/lon for automatic magnetic correction'
+                : 'Geographic True North'}
             </div>
           </div>
           <div
@@ -219,20 +232,21 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             </label>
             <div className="flex items-center gap-2">
               <span className="font-mono tabular-nums text-xs font-semibold text-slate-900 dark:text-slate-100">
-                {declinationDeg > 0
-                  ? `+${declinationDeg}° E`
-                  : declinationDeg < 0
-                  ? `${Math.abs(declinationDeg)}° W`
-                  : '0°'}
+                {formatDeclination(declinationDeg)}
               </span>
-              {declinationDeg !== 0 && (
+              {autoDeclinationEnabled && autoDeclination !== null ? (
+                <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                  Auto GPS
+                </span>
+              ) : (
                 <button
                   type="button"
-                  onClick={() => onDeclinationChange(0)}
-                  aria-label="Reset declination"
-                  className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                  onClick={onUseAutoDeclination}
+                  aria-label="Use automatic GPS declination"
+                  className="inline-flex items-center gap-1 text-xs font-medium text-orange-600 dark:text-orange-400 hover:underline"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" aria-hidden="true" />
+                  <RotateCcw className="w-3 h-3" aria-hidden="true" />
+                  <span>{autoDeclination !== null ? 'Auto GPS' : 'Reset'}</span>
                 </button>
               )}
             </div>
@@ -242,11 +256,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             type="range"
             min={-30}
             max={30}
-            step={0.5}
-            value={declinationDeg}
+            step={0.1}
+            value={Math.max(-30, Math.min(30, declinationDeg))}
             onChange={(e) => onDeclinationChange(Number.parseFloat(e.target.value))}
             className="mt-2 w-full accent-orange-600 cursor-pointer"
           />
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+            {autoDeclination !== null
+              ? `WMM-2025 local model: ${formatDeclination(autoDeclination)} based on current coordinates.`
+              : 'Automatically calculated offline from latitude and longitude once GPS locks.'}
+          </p>
         </div>
 
         {!hasLiveMagnetometer && (
