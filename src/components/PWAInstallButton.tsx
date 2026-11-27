@@ -50,7 +50,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ fallbackActi
               <div className="flex items-start justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <img
-                    src="/classic-dial-logo.png"
+                    src={`${import.meta.env.BASE_URL}classic-dial-logo.png`}
                     alt=""
                     referrerPolicy="no-referrer"
                     className="w-8 h-8 rounded-lg shrink-0 object-cover"

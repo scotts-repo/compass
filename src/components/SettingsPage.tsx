@@ -345,7 +345,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
 
         <div className="border-t border-slate-100 dark:border-slate-800/80 pt-4 flex items-center gap-2.5 text-xs text-slate-500 dark:text-slate-400">
           <img
-            src="/classic-dial-logo.png"
+            src={`${import.meta.env.BASE_URL}classic-dial-logo.png`}
             alt=""
             referrerPolicy="no-referrer"
             className="w-5 h-5 rounded shrink-0 object-cover"

@@ -132,7 +132,7 @@ export default function App() {
             className="inline-flex items-center gap-2.5 font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap shrink-0"
           >
             <img
-              src="/classic-dial-logo.png"
+              src={`${import.meta.env.BASE_URL}classic-dial-logo.png`}
               alt=""
               referrerPolicy="no-referrer"
               className="w-7 h-7 rounded-md shrink-0 object-cover"
