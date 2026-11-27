@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { CompassDial } from './components/CompassDial';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -49,7 +49,12 @@ function loadPrefs(): StoredPrefs {
 }
 
 export default function App() {
-  const [page, setPage] = useState<'compass' | 'settings'>('compass');
+  const [page, setPage] = useState<'compass' | 'settings'>(() =>
+    typeof window !== 'undefined' && window.location.hash === '#settings'
+      ? 'settings'
+      : 'compass'
+  );
+  const pushedSettingsHistoryRef = useRef<boolean>(false);
   const [prefs, setPrefs] = useState<StoredPrefs>(() => loadPrefs());
   const [lockedBearing, setLockedBearing] = useState<number | null>(null);
   const [manualHeading, setManualHeading] = useState<number>(0);
@@ -79,6 +84,51 @@ export default function App() {
       // Ignore storage errors
     }
   }, [prefs]);
+
+  useEffect(() => {
+    const syncFromHistory = () => {
+      const isSettings =
+        window.location.hash === '#settings' ||
+        (window.history.state as { page?: string } | null)?.page === 'settings';
+      if (!isSettings) {
+        pushedSettingsHistoryRef.current = false;
+      }
+      setPage(isSettings ? 'settings' : 'compass');
+    };
+
+    window.addEventListener('popstate', syncFromHistory);
+    window.addEventListener('hashchange', syncFromHistory);
+    return () => {
+      window.removeEventListener('popstate', syncFromHistory);
+      window.removeEventListener('hashchange', syncFromHistory);
+    };
+  }, []);
+
+  const navigateToSettings = useCallback(() => {
+    if (page === 'settings') return;
+    if (window.location.hash !== '#settings') {
+      pushedSettingsHistoryRef.current = true;
+      window.history.pushState({ page: 'settings' }, '', '#settings');
+    }
+    setPage('settings');
+  }, [page]);
+
+  const navigateToCompass = useCallback(() => {
+    if (page === 'compass') return;
+    if (pushedSettingsHistoryRef.current) {
+      pushedSettingsHistoryRef.current = false;
+      window.history.back();
+      return;
+    }
+    if (window.location.hash === '#settings') {
+      window.history.replaceState(
+        { page: 'compass' },
+        '',
+        window.location.pathname + window.location.search
+      );
+    }
+    setPage('compass');
+  }, [page]);
 
   // Compute local magnetic declination automatically from GPS lat & lon offline
   const autoDeclination = useMemo(
@@ -187,7 +237,7 @@ export default function App() {
         <div className="max-w-6xl mx-auto px-3 sm:px-6 lg:px-8 h-12 flex items-center justify-between gap-4 sm:gap-8">
           <button
             type="button"
-            onClick={() => setPage('compass')}
+            onClick={navigateToCompass}
             className="inline-flex items-center gap-2.5 font-display text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-50 whitespace-nowrap shrink-0"
           >
             <img
@@ -205,7 +255,7 @@ export default function App() {
           >
             <button
               type="button"
-              onClick={() => setPage('compass')}
+              onClick={navigateToCompass}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
                 page === 'compass'
                   ? 'text-orange-600 dark:text-orange-500 underline underline-offset-4'
@@ -216,7 +266,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => setPage('settings')}
+              onClick={navigateToSettings}
               className={`whitespace-nowrap shrink-0 transition-colors py-1 ${
                 page === 'settings'
                   ? 'text-orange-600 dark:text-orange-500 underline underline-offset-4'
@@ -232,7 +282,9 @@ export default function App() {
               fallbackAction={
                 <button
                   type="button"
-                  onClick={() => setPage(page === 'compass' ? 'settings' : 'compass')}
+                  onClick={() =>
+                    page === 'compass' ? navigateToSettings() : navigateToCompass()
+                  }
                   aria-label={page === 'compass' ? 'Open settings' : 'Return to compass'}
                   className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 min-h-[36px]"
                 >
@@ -318,7 +370,7 @@ export default function App() {
             gpsErrorMessage={gps.errorMessage}
             onRetryGps={gps.retryGps}
             onResetSessionStats={gps.resetSessionStats}
-            onBackToCompass={() => setPage('compass')}
+            onBackToCompass={navigateToCompass}
           />
         </main>
       )}
