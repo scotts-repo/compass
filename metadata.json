@@ -1,0 +1,6 @@
+{
+  "name": "Wayfinder",
+  "description": "Offline-first precision compass with live latitude, longitude, elevation, speed, and waypoint bearing telemetry.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
