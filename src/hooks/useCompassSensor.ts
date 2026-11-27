@@ -19,23 +19,14 @@ interface DeviceOrientationConstructorWithPermission {
 }
 
 export interface CompassSensorState {
-  /** Magnetic heading in degrees [0, 360) or null if no sensor reading yet */
   magneticHeading: number | null;
-  /** Unwrapped smooth continuous heading for glitch-free dial rotation */
   smoothHeading: number;
-  /** Pitch in degrees (-180 to 180) */
   pitch: number;
-  /** Roll in degrees (-90 to 90) */
   roll: number;
-  /** True when magnetometer accuracy or relative sensor reports */
   sensorSource: CompassSensorSource;
-  /** iOS compass accuracy in degrees if available */
   compassAccuracy: number | null;
-  /** Permission state for iOS DeviceOrientationEvent.requestPermission */
   permissionState: CompassPermissionState;
-  /** Request orientation sensor permission (required on iOS 13+ Safari) */
   requestPermission: () => Promise<void>;
-  /** Whether any orientation event has fired */
   hasLiveSignal: boolean;
 }
 
@@ -56,6 +47,7 @@ export function useCompassSensor(): CompassSensorState {
   const [sensorSource, setSensorSource] = useState<CompassSensorSource>('unavailable');
   const [compassAccuracy, setCompassAccuracy] = useState<number | null>(null);
   const [hasLiveSignal, setHasLiveSignal] = useState<boolean>(false);
+  const [listenerVersion, setListenerVersion] = useState<number>(0);
 
   const requiresExplicitPermission =
     typeof window !== 'undefined' &&
@@ -72,11 +64,13 @@ export function useCompassSensor(): CompassSensorState {
 
   const smoothRef = useRef<number | null>(null);
   const hasAbsoluteRef = useRef<boolean>(false);
+  const requestingRef = useRef<boolean>(false);
 
   const pushHeading = useCallback((rawDeg: number) => {
     const normalized = normalizeAngle(rawDeg);
     setMagneticHeading(normalized);
     setHasLiveSignal(true);
+    setPermissionState((prev) => (prev === 'prompt' ? 'granted' : prev));
 
     if (smoothRef.current === null) {
       smoothRef.current = normalized;
@@ -86,13 +80,18 @@ export function useCompassSensor(): CompassSensorState {
 
     const unwrappedTarget = unwrapCompassAngle(smoothRef.current, normalized);
     const delta = shortestAngleDelta(smoothRef.current, unwrappedTarget);
-    // Fluid damping coefficient (0.24 settles cleanly without jitter)
     const nextSmooth = smoothRef.current + delta * 0.24;
     smoothRef.current = nextSmooth;
     setSmoothHeading(nextSmooth);
   }, []);
 
-  const attachListeners = useCallback(() => {
+  // Attach listeners immediately (probing silently even before iOS explicit grant;
+  // if permission was already granted by the browser/OS, events start immediately)
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof DeviceOrientationEvent === 'undefined') {
+      return;
+    }
+
     const handleAbsolute = (event: Event) => {
       const e = event as DeviceOrientationEvent;
       if (e.alpha === null || typeof e.alpha !== 'number') return;
@@ -112,7 +111,6 @@ export function useCompassSensor(): CompassSensorState {
       if (typeof e.beta === 'number') setPitch(e.beta);
       if (typeof e.gamma === 'number') setRoll(e.gamma);
 
-      // Prefer iOS WebKit compass heading when provided
       if (typeof e.webkitCompassHeading === 'number' && !Number.isNaN(e.webkitCompassHeading)) {
         setSensorSource('webkit-compass');
         if (typeof e.webkitCompassAccuracy === 'number' && e.webkitCompassAccuracy >= 0) {
@@ -122,7 +120,6 @@ export function useCompassSensor(): CompassSensorState {
         return;
       }
 
-      // Skip relative fallback if absolute listener is already active
       if (hasAbsoluteRef.current) return;
 
       if (e.alpha !== null && typeof e.alpha === 'number') {
@@ -140,13 +137,7 @@ export function useCompassSensor(): CompassSensorState {
       window.removeEventListener('deviceorientationabsolute', handleAbsolute, true);
       window.removeEventListener('deviceorientation', handleOrientation, true);
     };
-  }, [pushHeading]);
-
-  useEffect(() => {
-    if (permissionState !== 'granted') return;
-    const cleanup = attachListeners();
-    return cleanup;
-  }, [permissionState, attachListeners]);
+  }, [pushHeading, listenerVersion]);
 
   const requestPermission = useCallback(async () => {
     if (typeof DeviceOrientationEvent === 'undefined') {
@@ -154,18 +145,84 @@ export function useCompassSensor(): CompassSensorState {
       return;
     }
 
+    if (requestingRef.current) return;
+
     const devOrient = DeviceOrientationEvent as unknown as DeviceOrientationConstructorWithPermission;
     if (typeof devOrient.requestPermission === 'function') {
+      requestingRef.current = true;
       try {
         const result = await devOrient.requestPermission();
         setPermissionState(result);
+        if (result === 'granted') {
+          setListenerVersion((v) => v + 1);
+        }
       } catch {
         setPermissionState('denied');
+      } finally {
+        requestingRef.current = false;
       }
     } else {
       setPermissionState('granted');
+      setListenerVersion((v) => v + 1);
     }
   }, []);
+
+  // Automatically request/enable orientation sensor on first user tap when iOS requires gesture,
+  // and re-attach listeners automatically if browser/OS sensor permission changes to granted.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleFirstInteraction = () => {
+      if (permissionState === 'prompt') {
+        void requestPermission();
+      }
+    };
+
+    if (permissionState === 'prompt') {
+      window.addEventListener('click', handleFirstInteraction, { capture: true, once: true });
+    }
+
+    let permStatus: PermissionStatus | null = null;
+    const checkMagnetometerPermission = async () => {
+      if (!navigator.permissions?.query) return;
+      try {
+        permStatus = await navigator.permissions.query({
+          name: 'magnetometer' as PermissionName,
+        });
+        if (permStatus.state === 'granted') {
+          setPermissionState('granted');
+          setListenerVersion((v) => v + 1);
+        }
+        permStatus.onchange = () => {
+          if (permStatus?.state === 'granted') {
+            setPermissionState('granted');
+            setListenerVersion((v) => v + 1);
+          } else if (permStatus?.state === 'denied') {
+            setPermissionState('denied');
+          }
+        };
+      } catch {
+        // magnetometer permission descriptor not supported on this browser
+      }
+    };
+
+    void checkMagnetometerPermission();
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        setListenerVersion((v) => v + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      window.removeEventListener('click', handleFirstInteraction, { capture: true });
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (permStatus) {
+        permStatus.onchange = null;
+      }
+    };
+  }, [permissionState, requestPermission]);
 
   return {
     magneticHeading,

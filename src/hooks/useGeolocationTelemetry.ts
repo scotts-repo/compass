@@ -109,6 +109,9 @@ export function useGeolocationTelemetry() {
     timestamp: number;
   } | null>(null);
 
+  const statusRef = useRef<GeolocationStatus>(status);
+  statusRef.current = status;
+
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
       setStatus('unsupported');
@@ -133,9 +136,7 @@ export function useGeolocationTelemetry() {
         if (prev) {
           stepDistance = haversineDistanceMeters(prev.lat, prev.lon, coords.latitude, coords.longitude);
           const dtSeconds = (timestamp - prev.timestamp) / 1000;
-          // Derive speed from consecutive fixes if native speed is null
           if (resolvedSpeed === null && dtSeconds > 0.4) {
-            // Filter tiny GPS jitter (< 1.5m when accuracy is coarse)
             const jitterThreshold = Math.max(1.5, Math.min(8, (coords.accuracy ?? 10) * 0.35));
             resolvedSpeed = stepDistance > jitterThreshold ? stepDistance / dtSeconds : 0;
           }
@@ -172,7 +173,6 @@ export function useGeolocationTelemetry() {
         setStatus('active');
         setErrorMessage(null);
 
-        // Persist last known fix offline for instant availability in no-signal zones
         try {
           const toStore: StoredFix = {
             latitude: coords.latitude,
@@ -187,12 +187,10 @@ export function useGeolocationTelemetry() {
           // Ignore storage quota errors
         }
 
-        // Update session telemetry statistics
         setSessionStats((current) => {
           let nextGain = current.elevationGainM;
           if (resolvedAlt !== null && prev?.alt !== null && prev?.alt !== undefined) {
             const altDelta = resolvedAlt - prev.alt;
-            // Ignore vertical GPS noise under 2.5m
             if (altDelta > 2.5) {
               nextGain += altDelta;
             }
@@ -255,6 +253,72 @@ export function useGeolocationTelemetry() {
       navigator.geolocation.clearWatch(watchId);
     };
   }, [watchKey]);
+
+  // Automatically restart GPS watcher whenever browser geolocation permission transitions to granted,
+  // or when returning to the app after granting permissions in system/browser settings.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) return;
+
+    let permStatus: PermissionStatus | null = null;
+
+    const restartIfNeeded = () => {
+      if (statusRef.current !== 'active') {
+        setWatchKey((k) => k + 1);
+      }
+    };
+
+    const monitorPermission = async () => {
+      if (!navigator.permissions?.query) return;
+      try {
+        permStatus = await navigator.permissions.query({ name: 'geolocation' });
+        if (permStatus.state === 'granted') {
+          restartIfNeeded();
+        }
+        permStatus.onchange = () => {
+          if (permStatus?.state === 'granted') {
+            setWatchKey((k) => k + 1);
+          } else if (permStatus?.state === 'denied') {
+            setStatus('denied');
+          }
+        };
+      } catch {
+        // Permissions API for geolocation unsupported
+      }
+    };
+
+    void monitorPermission();
+
+    const handleVisibilityOrFocus = async () => {
+      if (document.visibilityState !== 'visible') return;
+      if (statusRef.current === 'active') return;
+
+      if (navigator.permissions?.query) {
+        try {
+          const current = await navigator.permissions.query({ name: 'geolocation' });
+          if (current.state === 'granted') {
+            setWatchKey((k) => k + 1);
+          }
+          return;
+        } catch {
+          // Fall through to retry
+        }
+      }
+      if (statusRef.current === 'denied' || statusRef.current === 'timeout' || statusRef.current === 'unavailable') {
+        setWatchKey((k) => k + 1);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      if (permStatus) {
+        permStatus.onchange = null;
+      }
+    };
+  }, []);
 
   const retryGps = useCallback(() => {
     setWatchKey((k) => k + 1);
